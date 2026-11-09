@@ -1,21 +1,26 @@
+#include <iomanip>
 #include <iostream>
-#include "cpu.hpp"
 
-int main() {
-    CPU cpu;
+#include "memory.hpp"
 
-    std::cout << std::hex;
-    std::cout << "PC = " << cpu.pc << "\n";
-    std::cout << "SP = " << cpu.sp << "\n";
-    std::cout << "AF = " << cpu.af() << "\n";
-    std::cout << "HL = " << cpu.hl() << "\n";
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage: retroforge <rom.gb>\n";
+        return 1;
+    }
 
-    cpu.b = 0x12;
-    cpu.c = 0x34;
-    std::cout << "BC = " << cpu.bc() << "\n";   // attendu : 1234
+    Memory mem;
+    if (!mem.load_rom(argv[1])) {
+        std::cerr << "Impossible de charger la ROM : " << argv[1] << "\n";
+        return 1;
+    }
 
-    cpu.set_af(0xFFFF);
-    std::cout << "AF = " << cpu.af() << "\n";   // attendu : ffff0 ? non, regarde bien
+    std::cout << "ROM chargee. Octets a partir de 0x0100 :\n";
+    std::cout << std::hex << std::setfill('0');
+    for (int i = 0; i < 4; i++) {
+        std::cout << std::setw(2) << static_cast<int>(mem.read(0x0100 + i)) << " ";
+    }
+    std::cout << "\n";
 
-    std::cout << "Z = " << cpu.get_flag(CPU::FLAG_Z) << "\n";
+    return 0;
 }
