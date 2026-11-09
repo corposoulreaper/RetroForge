@@ -1,6 +1,7 @@
 #include <iomanip>
 #include <iostream>
 
+#include "cpu.hpp"
 #include "memory.hpp"
 
 int main(int argc, char* argv[]) {
@@ -15,12 +16,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "ROM chargee. Octets a partir de 0x0100 :\n";
-    std::cout << std::hex << std::setfill('0');
-    for (int i = 0; i < 4; i++) {
-        std::cout << std::setw(2) << static_cast<int>(mem.read(0x0100 + i)) << " ";
+    CPU cpu;
+    cpu.mem = &mem;
+
+    std::cout << std::hex;
+    for (int i = 0; i < 3; i++) {
+        cpu.step();
+        std::cout << "PC = " << cpu.pc << "\n";
     }
-    std::cout << "\n";
 
     return 0;
 }
