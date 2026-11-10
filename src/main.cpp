@@ -159,6 +159,7 @@ static int run_window(CPU& cpu, Memory& mem, PPU& ppu, const std::string& title)
     Uint64 next_frame = SDL_GetPerformanceCounter();
     Uint64 fps_start = next_frame;  // pour afficher les FPS dans le titre de la fenêtre
     int fps_frames = 0;
+    int autosave_frames = 0;  // sauvegarde automatique de la RAM toutes les ~5 secondes si elle a changé
 
     bool running = true;
     bool error = false;
@@ -199,6 +200,12 @@ static int run_window(CPU& cpu, Memory& mem, PPU& ppu, const std::string& title)
         SDL_RenderCopy(renderer, texture, nullptr, nullptr);
         SDL_RenderPresent(renderer);
 
+        // Autosauvegarde : protège contre un plantage ou une fermeture brutale
+        if (++autosave_frames >= 300) {
+            autosave_frames = 0;
+            if (mem.ram_dirty) mem.save_ram();
+        }
+
         // FPS dans le titre (environ 59.7 si tout va bien ; bien moins = émulateur trop lent)
         fps_frames++;
         Uint64 t = SDL_GetPerformanceCounter();
@@ -219,6 +226,11 @@ static int run_window(CPU& cpu, Memory& mem, PPU& ppu, const std::string& title)
         } else if (now - next_frame > freq / 10) {
             next_frame = now;  // trop de retard : on se resynchronise
         }
+    }
+
+    // À la fermeture : on écrit la sauvegarde si la RAM a changé
+    if (mem.has_battery && mem.ram_dirty && mem.save_ram()) {
+        std::cerr << "Sauvegarde ecrite : " << mem.save_path << "\n";
     }
 
     SDL_DestroyTexture(texture);

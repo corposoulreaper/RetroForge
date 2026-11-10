@@ -33,6 +33,11 @@ struct Memory {
     int mbc1_high = 0;             // MBC1 : 2 bits hauts
     int mbc1_mode = 0;             // MBC1 : mode de banking (0 ou 1)
 
+    // Sauvegarde : la RAM des cartouches à pile est stockée dans un fichier .sav à côté de la ROM
+    std::string save_path;
+    bool has_battery = false;
+    bool ram_dirty = false;        // la RAM a été modifiée depuis la dernière sauvegarde
+
     // Valeurs des registres après le boot de la console (on n'émule pas la boot ROM)
     Memory() {
         cells[0xFF00] = 0x30;  // JOYP : aucune ligne sélectionnée
@@ -83,6 +88,7 @@ struct Memory {
         if (pos >= 0xA000 && pos < 0xC000 && !ext_ram.empty()) {  // RAM de la cartouche
             if (ram_enabled && !(mbc == 3 && ram_bank >= 8)) {
                 ext_ram[(ram_bank * 0x2000 + (pos - 0xA000)) % ext_ram.size()] = v;
+                ram_dirty = true;
             }
             return;
         }
@@ -247,12 +253,50 @@ struct Memory {
         }
         ext_ram.assign(ram_size, 0);
 
+        // Cartouche à pile de sauvegarde (types 0x03, 0x09, 0x0F, 0x10, 0x13, 0x1B, 0x1E) ?
+        has_battery = !ext_ram.empty() &&
+                      (type == 0x03 || type == 0x09 || type == 0x0F || type == 0x10 ||
+                       type == 0x13 || type == 0x1B || type == 0x1E);
+
+        // Fichier de sauvegarde : même nom que la ROM, extension .sav
+        size_t dot = path.find_last_of('.');
+        size_t slash = path.find_last_of("/\\");
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+            save_path = path.substr(0, dot) + ".sav";
+        } else {
+            save_path = path + ".sav";
+        }
+        ram_dirty = false;
+        if (has_battery) load_save();
+
         rom_bank = 1;
         ram_bank = 0;
         ram_enabled = false;
         mbc1_low = 1;
         mbc1_high = 0;
         mbc1_mode = 0;
+        return true;
+    }
+
+    // --- Sauvegarde ---------------------------------------------------------
+    // Charge la sauvegarde existante, s'il y en a une
+    void load_save() {
+        std::ifstream f(save_path, std::ios::binary);
+        if (!f) return;
+        f.read(reinterpret_cast<char*>(ext_ram.data()), static_cast<std::streamsize>(ext_ram.size()));
+        std::cerr << "Sauvegarde chargee : " << save_path << "\n";
+    }
+
+    // Écrit la RAM de la cartouche dans le fichier .sav (sans effet si la cartouche n'a pas de pile)
+    bool save_ram() {
+        if (!has_battery) return true;
+        std::ofstream f(save_path, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            std::cerr << "Impossible d'ecrire la sauvegarde : " << save_path << "\n";
+            return false;
+        }
+        f.write(reinterpret_cast<const char*>(ext_ram.data()), static_cast<std::streamsize>(ext_ram.size()));
+        ram_dirty = false;
         return true;
     }
 };
