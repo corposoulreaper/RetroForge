@@ -6,12 +6,65 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #include "apu.hpp"
 #include "cpu.hpp"
 #include "memory.hpp"
 #include "ppu.hpp"
+
+struct Machine {
+    Memory mem;
+    APU apu;
+    CPU cpu;
+    PPU ppu;
+    std::string rom_path;
+
+    Machine() {
+        bind();
+    }
+
+    void bind() {
+        mem.apu = &apu;
+        cpu.mem = &mem;
+        ppu.mem = &mem;
+    }
+
+    bool load_rom(const std::string& path) {
+        if (mem.has_battery && mem.ram_dirty && !mem.save_ram()) return false;
+
+        Memory next_mem;
+        next_mem.apu = &apu;
+        if (!next_mem.load_rom(path)) return false;
+
+        mem = std::move(next_mem);
+        apu = APU{};
+        cpu = CPU{};
+        ppu = PPU{};
+        bind();
+        rom_path = path;
+        return true;
+    }
+
+    bool reset() {
+        return load_rom(rom_path);
+    }
+};
+
+#ifdef __EMSCRIPTEN__
+static Machine web_machine;
+
+EM_JS(void, sync_browser_saves, (), {
+    Module.FS.syncfs(false, function(error) {
+        if (error) console.error('Erreur de sauvegarde IndexedDB:', error);
+    });
+});
+#endif
 
 // ---------------------------------------------------------------------------
 // Mode test (--test) : sans fenêtre, s'arrête sur "Passed" / "Failed" (ROMs de Blargg)
@@ -114,6 +167,7 @@ static void dump_state(const CPU& cpu, const Memory& mem, const PPU& ppu) {
     std::cout << std::dec << std::setfill(' ') << "\n" << std::flush;
 }
 
+#ifndef __EMSCRIPTEN__
 static int run_window(CPU& cpu, Memory& mem, PPU& ppu, APU& apu, const std::string& title) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::cerr << "Erreur SDL_Init : " << SDL_GetError() << "\n";
@@ -264,6 +318,212 @@ static int run_window(CPU& cpu, Memory& mem, PPU& ppu, APU& apu, const std::stri
     SDL_Quit();
     return error ? 1 : 0;
 }
+#else
+struct WebLoop {
+    CPU& cpu;
+    Memory& mem;
+    PPU& ppu;
+    APU& apu;
+    SDL_Window* window;
+    SDL_Renderer* renderer;
+    SDL_Texture* texture;
+    SDL_AudioDeviceID audio_device;
+    std::string rom_path;
+    std::vector<uint32_t> pixels;
+    int autosave_frames = 0;
+    bool running = true;
+    bool paused = false;
+
+    WebLoop(CPU& cpu_ref, Memory& mem_ref, PPU& ppu_ref, APU& apu_ref,
+            SDL_Window* window_ref, SDL_Renderer* renderer_ref,
+            SDL_Texture* texture_ref, SDL_AudioDeviceID audio_ref,
+            const std::string& rom_path_ref)
+        : cpu(cpu_ref), mem(mem_ref), ppu(ppu_ref), apu(apu_ref),
+          window(window_ref), renderer(renderer_ref), texture(texture_ref),
+          audio_device(audio_ref), rom_path(rom_path_ref), pixels(PPU::WIDTH * PPU::HEIGHT) {}
+};
+
+static WebLoop* active_web_loop = nullptr;
+
+EM_JS(void, update_web_pause_ui, (int paused), {
+    var button = document.getElementById('pause-button');
+    if (button) {
+        button.dataset.paused = paused ? 'true' : 'false';
+        button.textContent = paused ? '\u25b6' : '\u275a\u275a';
+        button.title = paused ? 'Reprendre' : 'Mettre en pause';
+        button.setAttribute('aria-label', button.title);
+    }
+    var status = document.getElementById('status-text');
+    if (status) {
+        status.textContent = paused ? 'En pause' : (Module.persistentSaves
+            ? '\u00c9mulation en cours' : '\u00c9mulation \u00b7 sauvegardes temporaires');
+    }
+});
+
+extern "C" EMSCRIPTEN_KEEPALIVE void web_set_paused(int paused) {
+    if (!active_web_loop) return;
+    active_web_loop->paused = paused != 0;
+    if (active_web_loop->audio_device) {
+        if (active_web_loop->paused) SDL_ClearQueuedAudio(active_web_loop->audio_device);
+        SDL_PauseAudioDevice(active_web_loop->audio_device, active_web_loop->paused ? 1 : 0);
+    }
+    update_web_pause_ui(active_web_loop->paused ? 1 : 0);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void web_restart() {
+    if (!active_web_loop || !web_machine.reset()) {
+        std::cerr << "Impossible de redemarrer la ROM.\n";
+        return;
+    }
+    active_web_loop->paused = false;
+    active_web_loop->autosave_frames = 0;
+    active_web_loop->apu.samples.clear();
+    active_web_loop->ppu.frame_ready = false;
+    if (active_web_loop->audio_device) {
+        SDL_ClearQueuedAudio(active_web_loop->audio_device);
+        SDL_PauseAudioDevice(active_web_loop->audio_device, 0);
+    }
+    sync_browser_saves();
+    update_web_pause_ui(0);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int web_load_rom(const char* path) {
+    if (!active_web_loop || !path) return 0;
+    bool loaded = web_machine.load_rom(path);
+    sync_browser_saves();
+    if (!loaded) return 0;
+
+    active_web_loop->paused = false;
+    active_web_loop->autosave_frames = 0;
+    active_web_loop->apu.samples.clear();
+    active_web_loop->ppu.frame_ready = false;
+    if (active_web_loop->audio_device) {
+        SDL_ClearQueuedAudio(active_web_loop->audio_device);
+        SDL_PauseAudioDevice(active_web_loop->audio_device, 0);
+    }
+    update_web_pause_ui(0);
+    return 1;
+}
+
+static void web_frame(void* context) {
+    auto* loop = static_cast<WebLoop*>(context);
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        if (ev.type == SDL_QUIT) {
+            loop->running = false;
+        } else if (ev.type == SDL_KEYDOWN && !ev.key.repeat) {
+            if (ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE) loop->running = false;
+            if (ev.key.keysym.sym == SDLK_p) web_set_paused(!loop->paused);
+            if (ev.key.keysym.scancode == SDL_SCANCODE_F1) dump_state(loop->cpu, loop->mem, loop->ppu);
+            if (ev.key.keysym.sym != SDLK_p) handle_key(loop->mem, ev.key.keysym, true);
+        } else if (ev.type == SDL_KEYUP) {
+            if (ev.key.keysym.sym != SDLK_p) handle_key(loop->mem, ev.key.keysym, false);
+        }
+    }
+
+    int frame_cycles = 0;
+    while (loop->running && !loop->paused && !loop->ppu.frame_ready && frame_cycles < 70224) {
+        int cycles = loop->cpu.step();
+        if (cycles < 0) {
+            std::cerr << "Opcode inconnu, arrêt de l'émulation.\n";
+            loop->running = false;
+            break;
+        }
+        loop->mem.tick(cycles);
+        loop->ppu.tick(cycles);
+        loop->apu.tick(cycles);
+        frame_cycles += cycles;
+    }
+    loop->ppu.frame_ready = false;
+
+    if (loop->audio_device && !loop->apu.samples.empty()) {
+        SDL_QueueAudio(loop->audio_device, loop->apu.samples.data(),
+                       static_cast<Uint32>(loop->apu.samples.size() * sizeof(int16_t)));
+    }
+    loop->apu.samples.clear();
+
+    static const uint32_t palette[4] = {0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820};
+    for (size_t i = 0; i < loop->pixels.size(); i++) {
+        loop->pixels[i] = palette[loop->ppu.framebuffer[i] & 3];
+    }
+    SDL_UpdateTexture(loop->texture, nullptr, loop->pixels.data(), PPU::WIDTH * static_cast<int>(sizeof(uint32_t)));
+    SDL_RenderClear(loop->renderer);
+    SDL_RenderCopy(loop->renderer, loop->texture, nullptr, nullptr);
+    SDL_RenderPresent(loop->renderer);
+
+    if (++loop->autosave_frames >= 300) {
+        loop->autosave_frames = 0;
+        if (loop->mem.has_battery && loop->mem.ram_dirty && loop->mem.save_ram()) {
+            sync_browser_saves();
+        }
+    }
+
+    if (!loop->running) {
+        if (loop->mem.has_battery && loop->mem.ram_dirty && loop->mem.save_ram()) {
+            sync_browser_saves();
+        }
+        if (loop->audio_device) SDL_CloseAudioDevice(loop->audio_device);
+        SDL_DestroyTexture(loop->texture);
+        SDL_DestroyRenderer(loop->renderer);
+        SDL_DestroyWindow(loop->window);
+        SDL_Quit();
+        emscripten_cancel_main_loop();
+        active_web_loop = nullptr;
+        delete loop;
+    }
+}
+
+static int run_window(CPU& cpu, Memory& mem, PPU& ppu, APU& apu, const std::string& title) {
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        std::cerr << "Erreur SDL_Init : " << SDL_GetError() << "\n";
+        return 1;
+    }
+
+    SDL_AudioDeviceID audio_device = 0;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+        SDL_AudioSpec audio_spec{};
+        audio_spec.freq = apu.sample_rate;
+        audio_spec.format = AUDIO_S16SYS;
+        audio_spec.channels = 2;
+        audio_spec.samples = 1024;
+        audio_device = SDL_OpenAudioDevice(nullptr, 0, &audio_spec, nullptr, 0);
+        if (audio_device) SDL_PauseAudioDevice(audio_device, 0);
+        else SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    }
+
+    SDL_Window* window = SDL_CreateWindow(title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                          PPU::WIDTH * 4, PPU::HEIGHT * 4, SDL_WINDOW_RESIZABLE);
+    if (!window) {
+        std::cerr << "Erreur SDL_CreateWindow : " << SDL_GetError() << "\n";
+        SDL_Quit();
+        return 1;
+    }
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+    if (!renderer) {
+        std::cerr << "Erreur SDL_CreateRenderer : " << SDL_GetError() << "\n";
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    SDL_RenderSetLogicalSize(renderer, PPU::WIDTH, PPU::HEIGHT);
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                             SDL_TEXTUREACCESS_STREAMING, PPU::WIDTH, PPU::HEIGHT);
+    if (!texture) {
+        std::cerr << "Erreur SDL_CreateTexture : " << SDL_GetError() << "\n";
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    auto* loop = new WebLoop(cpu, mem, ppu, apu, window, renderer, texture, audio_device, web_machine.rom_path);
+    active_web_loop = loop;
+    emscripten_set_main_loop_arg(web_frame, loop, 0, 1);
+    return 0;
+}
+#endif
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -277,19 +537,19 @@ int main(int argc, char* argv[]) {
         if (std::strcmp(argv[i], "--test") == 0) test_mode = true;
     }
 
-    Memory mem;
-    APU apu;
-    mem.apu = &apu;
-    if (!mem.load_rom(argv[1])) {
+ #ifdef __EMSCRIPTEN__
+     Machine& machine = web_machine;
+ #else
+     Machine machine;
+ #endif
+     Memory& mem = machine.mem;
+     APU& apu = machine.apu;
+     CPU& cpu = machine.cpu;
+     PPU& ppu = machine.ppu;
+    if (!machine.load_rom(argv[1])) {
         std::cerr << "Impossible de charger la ROM : " << argv[1] << "\n";
         return 1;
     }
-
-    CPU cpu;
-    cpu.mem = &mem;
-
-    PPU ppu;
-    ppu.mem = &mem;
 
     if (test_mode) return run_test(cpu, mem, ppu, apu);
     return run_window(cpu, mem, ppu, apu, "RetroForge - " + std::string(argv[1]));

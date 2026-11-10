@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f2f0e8">
+  <title>RetroForge | Game Boy</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f2f0e8;
+      --ink: #202c29;
+      --muted: #64716c;
+      --line: #c9cec3;
+      --green: #b7d7a8;
+      --green-dark: #193b35;
+      --red: #e85c43;
+      --yellow: #f1c84b;
+      font-family: "Trebuchet MS", "Lucida Sans", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background-color: var(--paper);
+      background-image: radial-gradient(#c9cec3 0.7px, transparent 0.7px);
+      background-size: 15px 15px;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    .shell { max-width: 1080px; margin: 0 auto; padding: 18px 22px 30px; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      min-height: 56px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 900; }
+    .brand-mark {
+      display: grid; place-items: center; width: 34px; aspect-ratio: 1;
+      color: var(--paper); background: var(--green-dark); border-radius: 9px;
+      font-family: monospace; font-size: 19px;
+    }
+    .brand small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; font-weight: 700; }
+    .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .status-dot { width: 8px; aspect-ratio: 1; background: var(--yellow); border-radius: 50%; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 28px; padding-top: 28px; }
+    .play-area { min-width: 0; }
+    .screen-wrap {
+      padding: clamp(12px, 3vw, 26px); background: var(--green-dark);
+      border: 1px solid #0e2925; border-radius: 12px; box-shadow: 0 8px 0 #aab3a7;
+    }
+    .screen-label { display: flex; justify-content: space-between; color: #c4d2c4; font: 10px/1.2 monospace; letter-spacing: 1px; margin-bottom: 12px; }
+    .screen {
+      display: grid; place-items: center; overflow: hidden; aspect-ratio: 10 / 9;
+      background: #101b19; border: 2px solid #071411; border-radius: 4px;
+    }
+    canvas { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; outline: none; }
+    .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 22px; }
+    .load-button, .icon-button {
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+      min-height: 42px; border: 1px solid var(--ink); border-radius: 7px;
+      cursor: pointer; transition: transform 120ms ease, background 120ms ease;
+    }
+    .load-button { padding: 0 15px; color: white; background: var(--red); font-weight: 800; }
+    .icon-button { width: 44px; color: var(--ink); background: transparent; font-size: 18px; }
+    .load-button:hover, .icon-button:hover { transform: translateY(-2px); }
+    .load-button:active, .icon-button:active { transform: translateY(0); }
+    #rom-picker { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    #rom-name { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    aside { padding: 18px 0 0; }
+    .deck-title { margin: 0 0 18px; font: 800 12px/1.2 monospace; letter-spacing: 1.4px; }
+    .controls { display: flex; flex-direction: column; gap: 25px; padding: 20px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.52); }
+    .dpad { display: grid; grid-template: repeat(3, 42px) / repeat(3, 42px); justify-content: center; gap: 3px; }
+    .key {
+      display: grid; place-items: center; min-width: 0; padding: 0; border: 1px solid #89958a;
+      border-radius: 7px; background: #dce1d7; touch-action: none; user-select: none;
+      font-weight: 900; cursor: pointer;
+    }
+    .key:active, .key.pressed { color: white; background: var(--green-dark); }
+    .dpad .up { grid-area: 1 / 2; }
+    .dpad .left { grid-area: 2 / 1; }
+    .dpad .center { grid-area: 2 / 2; background: #b7c1b6; }
+    .dpad .right { grid-area: 2 / 3; }
+    .dpad .down { grid-area: 3 / 2; }
+    .action-pad { display: flex; justify-content: flex-end; gap: 13px; padding-right: 5px; }
+    .action-key { width: 52px; aspect-ratio: 1; border-radius: 50%; color: #fff; background: var(--red); border-color: #b54735; }
+    .key-caption { display: flex; justify-content: space-between; color: var(--muted); font: 10px monospace; }
+    .system-keys { display: flex; justify-content: center; gap: 10px; }
+    .system-key { width: 62px; height: 19px; border-radius: 12px; background: #7d8981; color: white; font: 9px monospace; transform: rotate(-18deg); }
+    footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 22px; color: var(--muted); font: 10px monospace; }
+    @media (max-width: 720px) {
+      .shell { padding: 12px 14px 22px; }
+      main { grid-template-columns: 1fr; gap: 20px; padding-top: 18px; }
+      aside { padding-top: 0; }
+      .deck-title { margin-bottom: 10px; }
+      .controls { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 14px; padding: 14px; }
+      .system-keys { grid-column: 1 / -1; }
+      footer { flex-wrap: wrap; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><div class="brand-mark">RF</div><div>RETROFORGE<small>DMG / 8-BIT</small></div></div>
+      <div class="status"><span class="status-dot" id="status-dot"></span><span id="status-text">Prêt à démarrer</span></div>
+    </header>
+    <main>
+      <section class="play-area" aria-label="Écran de jeu">
+        <div class="screen-wrap">
+          <div class="screen-label"><span>LCD / 160 × 144</span><span>DOT MATRIX</span></div>
+          <div class="screen"><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas></div>
+        </div>
+        <div class="bar">
+          <label class="load-button" for="rom-picker"><span aria-hidden="true">↑</span><span>Charger une ROM</span></label>
+          <input id="rom-picker" type="file" accept=".gb,.gbc,.bin">
+          <button class="icon-button" id="pause-button" type="button" title="Mettre en pause" aria-label="Mettre en pause" disabled>Ⅱ</button>
+          <button class="icon-button" id="restart-button" type="button" title="Redémarrer la ROM" aria-label="Redémarrer la ROM" disabled>↻</button>
+          <button class="icon-button" id="fullscreen" type="button" title="Plein écran" aria-label="Plein écran">⛶</button>
+          <span id="rom-name">Aucune cartouche</span>
+        </div>
+      </section>
+      <aside>
+        <h1 class="deck-title">COMMANDES</h1>
+        <div class="controls">
+          <div class="dpad" aria-label="Croix directionnelle">
+            <button class="key up" data-key="ArrowUp" aria-label="Haut">↑</button>
+            <button class="key left" data-key="ArrowLeft" aria-label="Gauche">←</button>
+            <span class="key center" aria-hidden="true"></span>
+            <button class="key right" data-key="ArrowRight" aria-label="Droite">→</button>
+            <button class="key down" data-key="ArrowDown" aria-label="Bas">↓</button>
+          </div>
+          <div class="action-pad">
+            <button class="key action-key" data-key="KeyZ" aria-label="A">A</button>
+            <button class="key action-key" data-key="KeyX" aria-label="B">B</button>
+          </div>
+          <div class="key-caption"><span>SELECT</span><span>START</span></div>
+          <div class="system-keys">
+            <button class="key system-key" data-key="Backspace">SELECT</button>
+            <button class="key system-key" data-key="Enter">START</button>
+          </div>
+        </div>
+      </aside>
+    </main>
+    <footer><span>RETROFORGE / GAME BOY</span><span>SDL2 · WEBASSEMBLY</span></footer>
+  </div>
+  <script>
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      noInitialRun: true,
+      onRuntimeInitialized: function () {
+        runtimeReady = true;
+        initializeSaveStorage();
+      },
+      printErr: function (text) { console.error(text); }
+    };
+
+    const picker = document.getElementById('rom-picker');
+    const statusText = document.getElementById('status-text');
+    const statusDot = document.getElementById('status-dot');
+    let runtimeReady = false;
+    let saveStorageReady = false;
+    let persistentSaves = false;
+    let pendingRom = null;
+    let started = false;
+    const pauseButton = document.getElementById('pause-button');
+    const restartButton = document.getElementById('restart-button');
+
+    function initializeSaveStorage() {
+      try {
+        const fs = Module.FS;
+        if (!fs.analyzePath('/saves').exists) fs.mkdir('/saves');
+        fs.mount(fs.filesystems.IDBFS, {}, '/saves');
+        fs.syncfs(true, function (error) {
+          saveStorageReady = true;
+          persistentSaves = !error;
+          statusText.textContent = error ? 'Sauvegardes temporaires' : 'Prêt à démarrer';
+          statusDot.style.background = error ? '#e5a83b' : '#58a96b';
+          if (error) console.warn('IndexedDB indisponible, les sauvegardes ne seront pas conservées.', error);
+          if (pendingRom) launchRom(pendingRom);
+        });
+      } catch (error) {
+        saveStorageReady = true;
+        statusText.textContent = 'Sauvegardes temporaires';
+        statusDot.style.background = '#e5a83b';
+        console.warn('Impossible de monter IndexedDB, les sauvegardes ne seront pas conservées.', error);
+        if (pendingRom) launchRom(pendingRom);
+      }
+    }
+
+    async function launchRom(file) {
+      if (file.size < 0x150 || file.size > 8 * 1024 * 1024) {
+        statusText.textContent = 'Taille de ROM invalide';
+        statusDot.style.background = '#e85c43';
+        return;
+      }
+      if (!runtimeReady || !saveStorageReady) {
+        pendingRom = file;
+        statusText.textContent = 'Chargement du moteur…';
+        return;
+      }
+      try {
+        const alreadyStarted = started;
+        picker.disabled = true;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
+        const romPath = (persistentSaves ? '/saves/' : '/') + safeName;
+        Module.FS.writeFile(romPath, bytes);
+
+        if (alreadyStarted) {
+          const loadRomIntoMachine = Module.cwrap('web_load_rom', 'number', ['string']);
+          if (!loadRomIntoMachine(romPath)) throw new Error('La ROM n’a pas pu être chargée.');
+        } else {
+          started = true;
+          Module.persistentSaves = persistentSaves;
+          Module.callMain([romPath]);
+        }
+
+        document.getElementById('rom-name').textContent = file.name;
+        statusText.textContent = persistentSaves ? 'Émulation en cours' : 'Émulation · sauvegardes temporaires';
+        statusDot.style.background = persistentSaves ? '#58a96b' : '#e5a83b';
+        pauseButton.disabled = false;
+        restartButton.disabled = false;
+      } catch (error) {
+        console.error(error);
+        statusText.textContent = started ? 'ROM refusée, jeu précédent conservé' : 'Échec du chargement';
+        statusDot.style.background = '#e85c43';
+      } finally {
+        picker.disabled = false;
+        pauseButton.disabled = !started;
+        restartButton.disabled = !started;
+      }
+    }
+
+    picker.addEventListener('change', function () {
+      const file = picker.files && picker.files[0];
+      if (file) launchRom(file);
+      picker.value = '';
+    });
+
+    pauseButton.addEventListener('click', function () {
+      const paused = pauseButton.dataset.paused !== 'true';
+      Module._web_set_paused(paused ? 1 : 0);
+    });
+
+    restartButton.addEventListener('click', function () {
+      Module._web_restart();
+    });
+
+    document.getElementById('fullscreen').addEventListener('click', function () {
+      const canvas = Module.canvas;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (canvas.requestFullscreen) canvas.requestFullscreen();
+    });
+
+    document.querySelectorAll('[data-key]').forEach(function (button) {
+      const code = button.dataset.key;
+      const key = code.startsWith('Arrow') ? code : code === 'Enter' ? 'Enter' : code === 'Backspace' ? 'Backspace' : code.slice(3).toLowerCase();
+      function dispatch(type, event) {
+        event.preventDefault();
+        Module.canvas.dispatchEvent(new KeyboardEvent(type, { key, code, bubbles: true }));
+        button.classList.toggle('pressed', type === 'keydown');
+      }
+      button.addEventListener('pointerdown', function (event) { button.setPointerCapture(event.pointerId); dispatch('keydown', event); });
+      button.addEventListener('pointerup', function (event) { dispatch('keyup', event); });
+      button.addEventListener('pointercancel', function (event) { dispatch('keyup', event); });
+      button.addEventListener('lostpointercapture', function (event) { dispatch('keyup', event); });
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
