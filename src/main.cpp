@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "apu.hpp"
 #include "cpu.hpp"
 #include "memory.hpp"
 #include "ppu.hpp"
@@ -15,7 +16,7 @@
 // ---------------------------------------------------------------------------
 // Mode test (--test) : sans fenêtre, s'arrête sur "Passed" / "Failed" (ROMs de Blargg)
 // ---------------------------------------------------------------------------
-static int run_test(CPU& cpu, Memory& mem, PPU& ppu) {
+static int run_test(CPU& cpu, Memory& mem, PPU& ppu, APU& apu) {
     const long long max_steps = 200000000;  // garde-fou
 
     long long steps = 0;
@@ -33,6 +34,7 @@ static int run_test(CPU& cpu, Memory& mem, PPU& ppu) {
 
         mem.tick(cycles);  // timer
         ppu.tick(cycles);  // écran
+        apu.tick(cycles);
         steps++;
         total_cycles += cycles;
 
@@ -112,10 +114,22 @@ static void dump_state(const CPU& cpu, const Memory& mem, const PPU& ppu) {
     std::cout << std::dec << std::setfill(' ') << "\n" << std::flush;
 }
 
-static int run_window(CPU& cpu, Memory& mem, PPU& ppu, const std::string& title) {
+static int run_window(CPU& cpu, Memory& mem, PPU& ppu, APU& apu, const std::string& title) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::cerr << "Erreur SDL_Init : " << SDL_GetError() << "\n";
         return 1;
+    }
+
+    SDL_AudioDeviceID audio_device = 0;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+        SDL_AudioSpec audio_spec{};
+        audio_spec.freq = apu.sample_rate;
+        audio_spec.format = AUDIO_S16SYS;
+        audio_spec.channels = 2;
+        audio_spec.samples = 1024;
+        audio_device = SDL_OpenAudioDevice(nullptr, 0, &audio_spec, nullptr, 0);
+        if (audio_device) SDL_PauseAudioDevice(audio_device, 0);
+        else SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
 
     const int scale = 4;
@@ -189,9 +203,16 @@ static int run_window(CPU& cpu, Memory& mem, PPU& ppu, const std::string& title)
             }
             mem.tick(cycles);
             ppu.tick(cycles);
+            apu.tick(cycles);
             frame_cycles += cycles;
         }
         ppu.frame_ready = false;
+
+        if (audio_device && !apu.samples.empty()) {
+            SDL_QueueAudio(audio_device, apu.samples.data(),
+                           static_cast<Uint32>(apu.samples.size() * sizeof(int16_t)));
+        }
+        apu.samples.clear();
 
         // Affichage
         for (size_t i = 0; i < pixels.size(); i++) pixels[i] = palette[ppu.framebuffer[i] & 3];
@@ -236,6 +257,10 @@ static int run_window(CPU& cpu, Memory& mem, PPU& ppu, const std::string& title)
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    if (audio_device) {
+        SDL_CloseAudioDevice(audio_device);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    }
     SDL_Quit();
     return error ? 1 : 0;
 }
@@ -253,6 +278,8 @@ int main(int argc, char* argv[]) {
     }
 
     Memory mem;
+    APU apu;
+    mem.apu = &apu;
     if (!mem.load_rom(argv[1])) {
         std::cerr << "Impossible de charger la ROM : " << argv[1] << "\n";
         return 1;
@@ -264,6 +291,6 @@ int main(int argc, char* argv[]) {
     PPU ppu;
     ppu.mem = &mem;
 
-    if (test_mode) return run_test(cpu, mem, ppu);
-    return run_window(cpu, mem, ppu, "RetroForge - " + std::string(argv[1]));
+    if (test_mode) return run_test(cpu, mem, ppu, apu);
+    return run_window(cpu, mem, ppu, apu, "RetroForge - " + std::string(argv[1]));
 }

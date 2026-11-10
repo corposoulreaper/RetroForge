@@ -7,8 +7,15 @@
 #include <string>
 #include <vector>
 
+struct ApuHook {
+    virtual ~ApuHook() = default;
+    virtual uint8_t apu_read(uint16_t pos) const = 0;
+    virtual void apu_write(uint16_t pos, uint8_t value) = 0;
+};
+
 struct Memory {
     std::array<uint8_t, 0x10000> cells{};
+    ApuHook* apu = nullptr;
 
     // Texte envoyé par la ROM sur le port série (ROMs de test de Blargg)
     std::string serial_output;
@@ -51,6 +58,7 @@ struct Memory {
 
     // --- Lecture ---------------------------------------------------------
     uint8_t read(uint16_t pos) const {
+        if (apu && pos >= 0xFF10 && pos <= 0xFF3F) return apu->apu_read(pos);
         if (pos < 0x4000) return rom.empty() ? 0xFF : rom[pos];
         if (pos < 0x8000) {
             if (rom.empty()) return 0xFF;
@@ -80,6 +88,10 @@ struct Memory {
 
     // --- Écriture --------------------------------------------------------
     void write(uint16_t pos, uint8_t v) {
+        if (apu && pos >= 0xFF10 && pos <= 0xFF3F) {
+            apu->apu_write(pos, v);
+            return;
+        }
         // Écrire dans la zone ROM ne modifie pas la ROM : ça configure le MBC
         if (pos < 0x8000) {
             mbc_write(pos, v);
