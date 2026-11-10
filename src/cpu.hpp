@@ -26,6 +26,13 @@ struct CPU {
     bool ime = false;
     bool ime_pending = false;
 
+    // HALT : le CPU dort jusqu'à ce qu'une interruption soit demandée (IF & IE)
+    bool halted = false;
+    bool halt_bug = false;  // HALT avec IME=0 et interruption déjà en attente : l'octet suivant est lu 2 fois
+
+    // M-cycles de l'instruction en cours (1 M-cycle = 4 T-cycles)
+    int cycles_m = 0;
+
     // Flags
     static constexpr uint8_t FLAG_Z = 1 << 7;
     static constexpr uint8_t FLAG_N = 1 << 6;
@@ -161,9 +168,13 @@ struct CPU {
     }
 
     // Saut relatif : l'offset est signé, ajouté à PC (déjà après l'instruction)
+    // Saut pris : +1 M-cycle
     void jr(bool condition) {
         int8_t offset = static_cast<int8_t>(fetch8());  // toujours lu
-        if (condition) pc += offset;
+        if (condition) {
+            pc += offset;
+            cycles_m += 1;
+        }
     }
 
     // Condition : 0=NZ 1=Z 2=NC 3=C
@@ -260,13 +271,77 @@ struct CPU {
         return (hi << 8) | lo;
     }
 
-    // Exécute une instruction. Renvoie false si l'opcode est inconnu.
-    bool step() {
+    // M-cycles de base d'un opcode (cas "non pris" pour les sauts/appels/retours conditionnels).
+    // 0 = opcode invalide ou préfixe CB (géré à part).
+    static int base_cycles(uint8_t op) {
+        static constexpr uint8_t table[256] = {
+            // 0x00
+            1, 3, 2, 2, 1, 1, 2, 1,  5, 2, 2, 2, 1, 1, 2, 1,
+            // 0x10
+            1, 3, 2, 2, 1, 1, 2, 1,  3, 2, 2, 2, 1, 1, 2, 1,
+            // 0x20
+            2, 3, 2, 2, 1, 1, 2, 1,  2, 2, 2, 2, 1, 1, 2, 1,
+            // 0x30
+            2, 3, 2, 2, 3, 3, 3, 1,  2, 2, 2, 2, 1, 1, 2, 1,
+            // 0x40 - 0xBF : calculés ci-dessous
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+            // 0xC0
+            2, 3, 3, 4, 3, 4, 2, 4,  2, 4, 3, 0, 3, 6, 2, 4,
+            // 0xD0
+            2, 3, 3, 0, 3, 4, 2, 4,  2, 4, 3, 0, 3, 0, 2, 4,
+            // 0xE0
+            3, 3, 2, 0, 0, 4, 2, 4,  4, 1, 4, 0, 0, 0, 2, 4,
+            // 0xF0
+            3, 3, 2, 1, 0, 4, 2, 4,  3, 2, 4, 1, 0, 0, 2, 4,
+        };
+        if (op >= 0x40 && op <= 0x7F) {                       // LD r8, r8' (et HALT)
+            if (op == 0x76) return 1;
+            return (((op >> 3) & 7) == 6 || (op & 7) == 6) ? 2 : 1;
+        }
+        if (op >= 0x80 && op <= 0xBF) return (op & 7) == 6 ? 2 : 1;  // ALU A, r8
+        return table[op];
+    }
+
+    // Déclenche l'interruption la plus prioritaire parmi celles en attente (bits de `pending`).
+    // Coût : 5 M-cycles = 20 T-cycles.
+    int service_interrupt(uint8_t pending) {
+        for (int i = 0; i < 5; i++) {
+            if (pending & (1 << i)) {
+                ime = false;
+                uint8_t iflag = mem->read(0xFF0F);
+                mem->write(0xFF0F, static_cast<uint8_t>(iflag & ~(1 << i) & 0x1F));
+                push16(pc);
+                pc = static_cast<uint16_t>(0x0040 + 8 * i);  // VBlank, STAT, Timer, Serial, Joypad
+                return 20;
+            }
+        }
+        return 0;
+    }
+
+    // Exécute une instruction (ou une interruption, ou un cycle de HALT).
+    // Renvoie le nombre de T-cycles consommés, ou -1 si l'opcode est inconnu.
+    int step() {
+        uint8_t pending = mem->read(0xFFFF) & mem->read(0xFF0F) & 0x1F;  // IE & IF
+
+        if (halted) {
+            if (!pending) return 4;  // on dort : le temps passe quand même
+            halted = false;
+        }
+
+        if (ime && pending) return service_interrupt(pending);
+
         bool enable_ime = ime_pending;  // EI pris en compte avant cette instruction
         ime_pending = false;
-        bool ok = execute();
+        if (!execute()) return -1;
         if (enable_ime) ime = true;     // activé après l'instruction suivant EI
-        return ok;
+        return cycles_m * 4;
     }
 
     // Instructions préfixées 0xCB : 00 = rotations/décalages, 01 = BIT, 10 = RES, 11 = SET
@@ -275,6 +350,9 @@ struct CPU {
         int r = op & 7;
         int bit = (op >> 3) & 7;
         uint8_t v = get_r8(r);
+
+        // 2 M-cycles sur registre ; sur (HL) : 3 pour BIT, 4 pour les autres
+        cycles_m = (r != 6) ? 2 : (((op >> 6) == 1) ? 3 : 4);
 
         switch (op >> 6) {
             case 0: {
@@ -336,9 +414,18 @@ struct CPU {
         return true;
     }
 
+    // Exécute une instruction. Renvoie false si l'opcode est inconnu.
     bool execute() {
         uint16_t addr = pc;
-        uint8_t opcode = fetch8();
+        uint8_t opcode;
+        if (halt_bug) {
+            opcode = mem->read(pc);  // bug du HALT : PC n'avance pas pour cet octet
+            halt_bug = false;
+        } else {
+            opcode = fetch8();
+        }
+
+        cycles_m = base_cycles(opcode);
 
         // Famille LD r8, r8' : 01 DDD SSS (0x76 est HALT, pas un LD)
         if (opcode >= 0x40 && opcode <= 0x7F && opcode != 0x76) {
@@ -383,11 +470,17 @@ struct CPU {
         // Sauts / appels / retours conditionnels (cc dans les bits 3-4)
         switch (opcode & 0xE7) {
             case 0xC0:    // RET cc
-                if (cond((opcode >> 3) & 3)) pc = pop16();
+                if (cond((opcode >> 3) & 3)) {
+                    pc = pop16();
+                    cycles_m += 3;
+                }
                 return true;
             case 0xC2: {  // JP cc, a16
                 uint16_t target = fetch16();
-                if (cond((opcode >> 3) & 3)) pc = target;
+                if (cond((opcode >> 3) & 3)) {
+                    pc = target;
+                    cycles_m += 1;
+                }
                 return true;
             }
             case 0xC4: {  // CALL cc, a16
@@ -395,6 +488,7 @@ struct CPU {
                 if (cond((opcode >> 3) & 3)) {
                     push16(pc);
                     pc = target;
+                    cycles_m += 3;
                 }
                 return true;
             }
@@ -402,6 +496,7 @@ struct CPU {
 
         switch (opcode) {
             case 0x00: break;                       // NOP
+            case 0x10: fetch8(); break;             // STOP (traité comme un NOP de 2 octets)
 
             // LD r16, n16
             case 0x01: set_bc(fetch16()); break;    // LD BC, n16
@@ -533,6 +628,15 @@ struct CPU {
             // Retour d'interruption et préfixe CB
             case 0xD9: pc = pop16(); ime = true; break;   // RETI
             case 0xCB: return execute_cb();               // préfixe CB
+
+            // HALT : dort jusqu'à une interruption. Si IME=0 et qu'une interruption est déjà
+            // en attente, le CPU ne dort pas et l'octet suivant est lu deux fois (bug du HALT).
+            case 0x76: {
+                uint8_t pending = mem->read(0xFFFF) & mem->read(0xFF0F) & 0x1F;
+                if (!ime && pending) halt_bug = true;
+                else                 halted = true;
+                break;
+            }
 
             // Interruptions
             case 0xF3: ime = false; break;          // DI

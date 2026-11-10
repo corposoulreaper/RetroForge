@@ -24,16 +24,21 @@ int main(int argc, char* argv[]) {
     const long long max_steps = 200000000;
 
     long long steps = 0;
+    long long total_cycles = 0;
     bool unknown_opcode = false;
     std::string verdict = "limite d'instructions atteinte";
 
     while (steps < max_steps) {
-        if (!cpu.step()) {
+        int cycles = cpu.step();  // T-cycles consommés, ou -1 si opcode inconnu
+        if (cycles < 0) {
             unknown_opcode = true;
             verdict = "opcode inconnu";
             break;
         }
+
+        mem.tick(cycles);  // fait avancer le timer (DIV / TIMA)
         steps++;
+        total_cycles += cycles;
 
         // Les ROMs de test de Blargg annoncent leur résultat sur le port série
         if (mem.serial_output.find("Passed") != std::string::npos) {
@@ -47,7 +52,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "\n--- Fin d'execution : " << verdict << " ---\n";
-    std::cout << "Instructions executees : " << std::dec << steps << "\n";
+    std::cout << "Pas executes : " << std::dec << steps
+              << "  |  Cycles : " << total_cycles << "\n";
     std::cout << std::hex << std::setfill('0');
     std::cout << "PC = " << std::setw(4) << cpu.pc << "\n";
     std::cout << "AF = " << std::setw(4) << cpu.af()
