@@ -1,66 +1,105 @@
-# retrocore
+RetroForge
 
-Modular retro console emulator written in C++. Game Boy first, more cores to come. Runs on desktop and in the browser via WebAssembly.
+A multi-system retro console emulator written in C++17 from scratch, starting with the original Game Boy (DMG). The goal is to build one emulator in which each system has its own core and shares a common frontend, and to grow it system by system: Game Boy Color next, then Game Boy Advance.
 
-> 🚧 **Work in progress**: currently working on the Game Boy CPU.
+Status
+System	Status
+Game Boy (DMG)	Playable: CPU, timer, interrupts, video, audio, cartridges, saves
+Game Boy Color (CGB)	Planned, next milestone
+Game Boy Advance (GBA)	Planned, long-term goal (separate ARM core)
 
-## Goals
+Game Boy (DMG) features
+CPU: the full Sharp LR35902 instruction set, including the CB-prefixed opcodes, DAA, HALT (with the halt bug) and cycle counting per instruction.
+Interrupts and timer: IME/IE/IF with the EI delay, plus DIV, TIMA, TMA and TAC.
+Video (PPU): scanline-based renderer for background, window and sprites (8x8 and 8x16), LCDC/STAT/LY/LYC, the VBlank and STAT interrupts, and OAM DMA.
+Audio (APU): the four sound channels (two pulse channels with sweep and envelope, wave, noise), mixed to stereo through SDL2.
+Cartridges: no MBC, MBC1, MBC3 (without the real-time clock) and MBC5, with battery-backed saves written to a .sav file next to the ROM.
+Input: keyboard mapped to the Game Boy pad.
+Debug aids: FPS shown in the window title, F1 dumps the CPU state to the terminal, and a headless --test mode for test ROMs.
+Accuracy
 
-- One emulation core per console, behind a common interface
-- Desktop frontend (SDL2) and web frontend (WebAssembly)
-- Built-in debugger (registers, VRAM, disassembler, step-by-step)
+The CPU passes all 11 individual ROMs of Blargg's cpu_instrs test suite (01-special to 11-op a,(hl)), run in headless mode with the serial output printed to the terminal.
 
-## Roadmap
+Known simplifications, which I plan to improve:
 
-- [ ] Game Boy CPU (passes Blargg `cpu_instrs`)
-- [ ] Memory map, interrupts, timers
-- [ ] PPU (passes `dmg-acid2`)
-- [ ] Input and cartridges (MBC1, MBC3)
-- [ ] Audio (APU)
-- [ ] WebAssembly frontend
-- [ ] Debugger
-- [ ] More consoles (CHIP-8, Game Boy Color, NES)
+TIMA reloads immediately on overflow (real hardware delays the reload by one M-cycle).
+Each scanline is drawn once, when it enters HBlank, so effects that change registers mid-scanline are not reproduced.
+The MBC3 real-time clock is not emulated.
+Build
 
-## Build
+Developed and tested on Linux (Linux Mint / Ubuntu).
 
-Requirements: a C++17 compiler, CMake.
+bash
+sudo apt install build-essential cmake libsdl2-dev
+cmake -S . -B build
+cmake --build build -j
+Usage
+bash
+./build/retroforge path/to/game.gb
 
-```bash
-cmake -B build
-cmake --build build
-```
+Headless mode for test ROMs (prints the serial output and stops on "Passed" or "Failed"):
 
-## Tests
+bash
+./build/retroforge path/to/test.gb --test
 
-Run the core regression tests with CTest:
+Run all the cpu_instrs ROMs in one go:
 
-```bash
-ctest --test-dir build --output-on-failure
-```
+bash
+for rom in path/to/cpu_instrs/individual/*.gb; do
+  echo "=== $(basename "$rom") ==="
+  timeout 60 ./build/retroforge "$rom" --test | grep -E "Passed|Failed|Fin d'execution"
+done
 
-GitHub Actions runs the native regression tests and builds the WebAssembly frontend on pushes and pull requests to `main`. Pushes to `main` are deployed to GitHub Pages after both jobs pass. Enable GitHub Pages with the **GitHub Actions** build and deployment source in the repository settings.
+Controls
+Game Boy	Keyboard
+D-pad	Arrow keys
+A	Z or W
+B	X
+Start	Enter or Space
+Select	Backspace or Right Shift
+Mute / unmute	M
+Print CPU state	F1
+Quit	Esc
+Project layout
+src/
+  main.cpp     SDL2 frontend, main loop, headless test mode
+  cpu.hpp      CPU: registers, instruction decoding, interrupts, HALT
+  memory.hpp   Memory map, cartridge and MBC, timer, joypad, saves
+  ppu.hpp      Video: modes, STAT/VBlank, scanline renderer
+  apu.hpp      Audio: four channels and mixing
+CMakeLists.txt
+Roadmap
+Game Boy Color
 
-## WebAssembly
+The CGB runs the same CPU as the DMG with extra features, so it builds directly on the current core:
 
-With the Emscripten SDK activated in the shell:
+ Detect CGB cartridges from the header (0x143)
+ Banked VRAM (2 banks) and WRAM (8 banks), tile attributes
+ Color palettes (BCPS/BCPD, OCPS/OCPD) and the CGB sprite and background priority rules
+ Double-speed mode (KEY1 / STOP)
+ General-purpose and HBlank DMA (HDMA)
+ Backward compatibility: DMG games with a CGB palette
+Game Boy Advance
 
-```bash
-emcmake cmake -S . -B build-wasm
-cmake --build build-wasm
-python3 -m http.server --directory build-wasm 8000
-```
+A much larger step with a different architecture, so it will be a separate core sharing only the frontend:
 
-Open `http://localhost:8000/retroforge.html` and choose a Game Boy ROM. The page includes touch controls for mobile browsers, pause/resume, ROM switching without reloading, and a restart button; press `P` to toggle pause from the keyboard.
-Battery-backed saves are stored in the browser's IndexedDB, separately for each ROM filename and browser origin.
+ ARM7TDMI CPU (ARM and Thumb instruction sets)
+ Memory map, BIOS handling and DMA
+ Video modes (tiled and bitmap) and the GBA PPU
+ Timers, interrupts and input
+ Audio (direct sound and the legacy Game Boy channels)
+Cross-system work
+ Split a common system interface (load ROM, run one frame, get the video buffer, push input, drain audio) from the per-system cores
+ Choose the system automatically from the ROM header or file extension
+ Automated regression tests (Blargg, dmg-acid2, instr_timing)
+Legal
 
-## Resources
+RetroForge does not include any ROM or BIOS. Use only games and test ROMs that you own or that are freely distributed (homebrew, test suites).
 
-- [Pan Docs](https://gbdev.io/pandocs/)
-
-## Legal
-
-This project does not provide, and does not support the distribution of, commercial ROMs. Test ROMs and homebrew only.
-
-## License
+Acknowledgements
+Pan Docs for the hardware reference
+Blargg's Game Boy test ROMs
+The Game Boy homebrew community
+License
 
 MIT
