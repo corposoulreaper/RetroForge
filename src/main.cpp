@@ -19,11 +19,19 @@ int main(int argc, char* argv[]) {
     CPU cpu;
     cpu.mem = &mem;
 
-    std::cout << std::hex;
-    for (int i = 0; i < 3; i++) {
-        cpu.step();
-        std::cout << "PC = " << cpu.pc << "\n";
+    int steps = 0;
+    while (steps < 100000 && cpu.step()) {
+        steps++;
     }
+
+    std::cout << std::hex << std::setfill('0');
+    std::cout << "Arret apres " << std::dec << steps << " instructions\n";
+    std::cout << std::hex;
+    std::cout << "PC = " << std::setw(4) << cpu.pc << "\n";
+    std::cout << "AF = " << std::setw(4) << cpu.af()
+              << "  BC = " << std::setw(4) << cpu.bc() << "\n";
+    std::cout << "DE = " << std::setw(4) << cpu.de()
+              << "  HL = " << std::setw(4) << cpu.hl() << "\n";
 
     return 0;
 }
